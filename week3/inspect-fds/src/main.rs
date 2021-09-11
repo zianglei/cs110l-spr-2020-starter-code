@@ -18,6 +18,10 @@ fn main() {
     match result {
         Some(p) => {
             p.print();
+            for child in ps_utils::get_child_processes(p.pid).expect(
+                &format!("Target \"{}\" doesn't have any child process.", p.pid)) {
+                    child.print();
+                }      
         },
         None => {
             eprintln!("Target \"{}\" did not match any running PIDs or executables", target);

@@ -36,6 +36,7 @@ impl Debugger {
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
                         self.inferior = Some(inferior);
+                        // Wake up the inferior
                         match self.inferior.as_mut().unwrap().cont() {
                             Ok(status) => {
                                 match status {

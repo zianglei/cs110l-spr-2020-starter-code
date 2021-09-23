@@ -94,4 +94,9 @@ impl Inferior {
             Err(e) => panic!("try_wait returned unexpected err: {:?}", e)
         })
     }
+
+    pub fn print_backtrace(&self) -> Result<(), nix::Error> {
+        println!("Hello World");
+        Ok(())
+    }
 }

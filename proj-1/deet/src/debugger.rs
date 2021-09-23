@@ -80,11 +80,20 @@ impl Debugger {
                         self.inferior.as_mut().unwrap().kill().unwrap();
                     }
                     return;
-                }
+                },
                 DebuggerCommand::Continue => {
                     self.cont();
+                },
+                DebuggerCommand::Backtrace => {
+                    if let Some(inferior) = &self.inferior {
+                        match inferior.print_backtrace() {
+                            Err(e) => {
+                                println!("Error printing backtrace: {:?}", e);
+                            },
+                            _ => { }
+                        }
+                    }
                 }
-   
             }
         }
     }

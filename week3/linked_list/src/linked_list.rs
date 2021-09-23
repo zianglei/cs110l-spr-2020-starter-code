@@ -15,7 +15,7 @@ struct Node<T> {
     next: Option<Box<Node<T>>>,
 }
 
-impl<'a, T: Clone> Iterator for LinkedListIter<'a, T> {
+impl<'a, T> Iterator for LinkedListIter<'a, T> {
     type Item = &'a T;
     fn next(&mut self) -> Option<&'a T> {
         match self.current {
@@ -75,7 +75,7 @@ impl<T: PartialEq> PartialEq for LinkedList<T> {
     }
 }
 
-impl<'a, T: Clone> IntoIterator for &'a LinkedList<T> {
+impl<'a, T> IntoIterator for &'a LinkedList<T> {
 
     type Item = &'a T;
     type IntoIter = LinkedListIter<'a, T>;

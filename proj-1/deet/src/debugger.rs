@@ -29,38 +29,62 @@ impl Debugger {
         }
     }
 
+    fn cont(&mut self) {
+        if self.inferior.is_none() || 
+            !self.inferior.as_mut().unwrap().running().unwrap() {
+                println!("No running subprocess");
+                return;
+        }
+        match self.inferior.as_mut().unwrap().cont() {
+            Ok(status) => {
+                match status {
+                    Status::Exited(_code) => {
+                        println!("Child exited (status {})", _code);
+                        self.inferior = None;
+                    },
+                    Status::Signaled(_signal) => {
+                        println!("Child signaled (signal {})", _signal);
+                        self.inferior = None;
+                    },
+                    Status::Stopped(_signal, _) => {
+                        println!("Child stopped (signal {})", _signal);                                    }
+                }
+            },
+            Err(_) => {
+                println!("Error continuing subprocess");
+            }
+        }
+    }
+
     pub fn run(&mut self) {
         loop {
             match self.get_next_command() {
                 DebuggerCommand::Run(args) => {
+                    if self.inferior.is_some() && 
+                        self.inferior.as_mut().unwrap().running().unwrap() {
+                        self.inferior.as_mut().unwrap()
+                                     .kill().unwrap();
+                    }
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         // Wake up the inferior
-                        match self.inferior.as_mut().unwrap().cont() {
-                            Ok(status) => {
-                                match status {
-                                    Status::Exited(_code) => {
-                                        println!("Child exited (status {})", _code);
-                                    },
-                                    Status::Signaled(_signal) => {
-                                        println!("Child signaled (signal {})", _signal);
-                                    },
-                                    Status::Stopped(_signal, _rip) => {
-                                        println!("Child stopped (signal {}, pc: {})", _signal, _rip);                                    }
-                                }
-                            },
-                            Err(_) => {
-                                println!("Error continuing subprocess");
-                            }
-                        }
+                        self.cont();
                     } else {
                         println!("Error starting subprocess");
                     }
                 }
                 DebuggerCommand::Quit => {
+                    if self.inferior.is_some() && 
+                        self.inferior.as_mut().unwrap().running().unwrap() {
+                        self.inferior.as_mut().unwrap().kill().unwrap();
+                    }
                     return;
                 }
+                DebuggerCommand::Continue => {
+                    self.cont();
+                }
+   
             }
         }
     }

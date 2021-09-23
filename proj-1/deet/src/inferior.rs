@@ -35,7 +35,6 @@ impl Inferior {
     /// Attempts to start a new inferior process. Returns Some(Inferior) if successful, or None if
     /// an error is encountered.
     pub fn new(target: &str, args: &Vec<String>) -> Option<Inferior> {
-        // TODO: implement me!
         let mut cmd = Command::new(target);
         cmd.args(args);
         
@@ -79,5 +78,20 @@ impl Inferior {
     pub fn cont(&self) -> Result<Status, nix::Error> {
         ptrace::cont(self.pid(), None)?;
         self.wait(None)
+    }
+
+    /// Kills this inferior and waits it to exit.
+    pub fn kill(&mut self) -> Result<Status, nix::Error> {
+        self.child.kill().unwrap();
+        println!("Killing running inferior (pid {})", self.pid());
+        self.wait(None)
+    }
+
+    pub fn running(&mut self) -> Result<bool, nix::Error> {
+        Ok(match self.child.try_wait() {
+            Ok(Some(_)) => false,
+            Ok(None) => true,
+            Err(e) => panic!("try_wait returned unexpected err: {:?}", e)
+        })
     }
 }

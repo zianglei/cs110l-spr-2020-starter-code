@@ -4,6 +4,7 @@ use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
+use crate::dwarf_data::{DwarfData};
 
 pub enum Status {
     /// Indicates inferior stopped. Contains the signal that stopped the process, as well as the
@@ -87,6 +88,7 @@ impl Inferior {
         self.wait(None)
     }
 
+    /// Check if this inferior is running
     pub fn running(&mut self) -> Result<bool, nix::Error> {
         Ok(match self.child.try_wait() {
             Ok(Some(_)) => false,
@@ -95,8 +97,19 @@ impl Inferior {
         })
     }
 
-    pub fn print_backtrace(&self) -> Result<(), nix::Error> {
-        println!("Hello World");
+    /// Print this inferior's backtrace using debugging symbols
+    pub fn print_backtrace(&self, debug_data: &DwarfData) -> Result<(), nix::Error> {
+        let pid = self.pid();
+        let mut rip = ptrace::getregs(pid)?.rip as usize;
+        let mut rbp = ptrace::getregs(pid)?.rbp as usize;
+        loop {
+            let func_name = debug_data.get_function_from_addr(rip).ok_or(nix::Error::Sys(nix::errno::Errno::EINVAL))?;
+            let func_line = debug_data.get_line_from_addr(rip).ok_or(nix::Error::Sys(nix::errno::Errno::EINVAL))?;
+            println!("{} ({})", func_name, func_line);
+            if func_name == "main" { break; }
+            rip = ptrace::read(pid, (rbp + 8) as ptrace::AddressType)? as usize;
+            rbp = ptrace::read(pid, rbp as ptrace::AddressType)? as usize;
+        }
         Ok(())
     }
 }

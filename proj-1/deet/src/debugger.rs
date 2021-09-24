@@ -12,6 +12,7 @@ pub struct Debugger {
     readline: Editor<()>,
     inferior: Option<Inferior>,
     debug_data: DwarfData,
+    breakpoints: Vec<usize>,
 }
 
 impl Debugger {
@@ -29,6 +30,8 @@ impl Debugger {
                 std::process::exit(1);
             }
         };
+
+        debug_data.print();
         
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
@@ -40,7 +43,8 @@ impl Debugger {
             history_path,
             readline,
             inferior: None,
-            debug_data
+            debug_data,
+            breakpoints: vec![]
         }
     }
 
@@ -63,7 +67,9 @@ impl Debugger {
                     },
                     Status::Stopped(signal, rip) => {
                         println!("Child stopped (signal {})", signal);
-                        println!("Stopped at {}", self.debug_data.get_line_from_addr(rip).unwrap());
+                        if let Some(line) = self.debug_data.get_line_from_addr(rip) {
+                            println!("Stopped at {}", line);
+                        }
                     }
                 }
             },
@@ -71,6 +77,15 @@ impl Debugger {
                 println!("Error continuing subprocess");
             }
         }
+    }
+
+    fn parse_address(addr: &str) -> Option<usize> {
+        let addr_without_0x = if addr.to_lowercase().starts_with("0x") {
+            &addr[2..]
+        } else {
+            &addr
+        };
+        usize::from_str_radix(addr_without_0x, 16).ok()
     }
 
     pub fn run(&mut self) {
@@ -82,7 +97,7 @@ impl Debugger {
                         self.inferior.as_mut().unwrap()
                                      .kill().unwrap();
                     }
-                    if let Some(inferior) = Inferior::new(&self.target, &args) {
+                    if let Some(inferior) = Inferior::new(&self.target, &args, &self.breakpoints) {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         // Wake up the inferior
@@ -109,6 +124,32 @@ impl Debugger {
                             },
                             _ => { }
                         }
+                    }
+                },
+                DebuggerCommand::Breakpoint(addr) => {
+
+                    if !addr.starts_with("*") {
+                        println!("Invalid address");
+                        return;
+                    }
+
+                    if let Some(b_addr) = Debugger::parse_address(&addr[1..]) {
+                        // If the inferior is some, add this new breakpoint
+                        if self.inferior.is_some() {
+                            match self.inferior.as_mut().unwrap().write_byte(b_addr, 0xcc) {
+                                Ok(_) => {},
+                                Err(_) => {
+                                    println!("Error setting breakpoint at {}", b_addr);
+                                    return;
+                                }
+                            }
+                        }
+                        
+                        println!("Set breakpoint {} at {:#x}", self.breakpoints.len(), b_addr);
+                        self.breakpoints.push(b_addr);
+                        
+                    } else {
+                        println!("Invalid address");
                     }
                 }
             }

@@ -2,9 +2,15 @@ use crate::debugger_command::DebuggerCommand;
 use crate::inferior::Inferior;
 use crate::inferior::Status;
 use crate::dwarf_data::{DwarfData, Error as DwarfError};
-
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use std::collections::HashMap;
+
+#[derive(Clone, Debug)]
+pub struct Breakpoint {
+    pub addr: usize,
+    pub orig_byte: u8
+}
 
 pub struct Debugger {
     target: String,
@@ -12,7 +18,8 @@ pub struct Debugger {
     readline: Editor<()>,
     inferior: Option<Inferior>,
     debug_data: DwarfData,
-    breakpoints: Vec<usize>,
+    breakpoints: HashMap<usize, Breakpoint>,
+    inferior_stopped_by_bp: bool,
 }
 
 impl Debugger {
@@ -44,7 +51,8 @@ impl Debugger {
             readline,
             inferior: None,
             debug_data,
-            breakpoints: vec![]
+            breakpoints: HashMap::new(),
+            inferior_stopped_by_bp: false
         }
     }
 
@@ -54,21 +62,81 @@ impl Debugger {
                 println!("No running subprocess");
                 return;
         }
+
+        // At first, self.inferior_stopped_by_bp is false. When the inferior is stopped at a breakpoint,
+        // this flag shoule be set to true. Then after the next `continue` command, self.inferior_stopped_by_bp
+        // is true, and the byte in the memory at breakpoint address should be set to the original value, and %rip -= 1.
+        // So the inferior re-execute the next instruction, as if the breakpoint doesn't exist.
+        // Finally restore this breakpoint.
+        if self.inferior_stopped_by_bp {
+            match self.inferior.as_mut().unwrap().step() {
+                Ok(status) => {
+                    match status {
+                        Status::Exited(code) => {
+                            println!("Child exited (status {})", code);
+                            self.inferior = None;
+                            return;
+                        },
+                        Status::Signaled(signal) => {
+                            println!("Child signaled (signal {})", signal);
+                            self.inferior = None;
+                            return;
+                        },
+                        Status::Stopped(signal, rip) => {
+                            if signal == nix::sys::signal::Signal::SIGTRAP {
+                                // Set the breakpoint
+                                if let Some(breakpoint) = self.breakpoints.get_mut(&(rip - 1)) {
+                                    breakpoint.orig_byte = self.inferior.as_mut().unwrap()
+                                        .write_byte(breakpoint.addr, 0xcc)
+                                        .expect(&format!("Reset breakpoint at {} failed", breakpoint.addr));
+                                    self.inferior_stopped_by_bp = false;
+                                }
+                            }
+                        }    
+                    }
+                },
+                Err(e) => {
+                    println!("Error stepping inferior ({:?})", e);
+                    self.inferior = None;
+                    self.inferior_stopped_by_bp = false;
+                    return;
+                }
+            }
+            
+        }
+
+        // Continue 
         match self.inferior.as_mut().unwrap().cont() {
             Ok(status) => {
                 match status {
                     Status::Exited(code) => {
                         println!("Child exited (status {})", code);
+                        self.inferior_stopped_by_bp = false;
                         self.inferior = None;
                     },
                     Status::Signaled(signal) => {
                         println!("Child signaled (signal {})", signal);
+                        self.inferior_stopped_by_bp = false;
                         self.inferior = None;
                     },
                     Status::Stopped(signal, rip) => {
                         println!("Child stopped (signal {})", signal);
+
                         if let Some(line) = self.debug_data.get_line_from_addr(rip) {
                             println!("Stopped at {}", line);
+                        }
+
+                        // Check breakpoint
+                        if signal == nix::sys::signal::Signal::SIGTRAP {
+                            // Now rip == breakpoint_addr + 1;
+                            if let Some(breakpoint) = self.breakpoints.get(&(rip - 1)) {
+                                // Restore the breakpoint
+                                let inferior = self.inferior.as_mut().unwrap();
+                                inferior.write_byte(breakpoint.addr, breakpoint.orig_byte)
+                                        .expect(&format!("Restore breakpoint at {} failed", breakpoint.addr));
+                                inferior.step_back_rip().unwrap();
+                                self.inferior_stopped_by_bp = true;
+                            }
                         }
                     }
                 }
@@ -92,12 +160,13 @@ impl Debugger {
         loop {
             match self.get_next_command() {
                 DebuggerCommand::Run(args) => {
+                    // If the inferior exists and is running, kill it.
                     if self.inferior.is_some() && 
                         self.inferior.as_mut().unwrap().running().unwrap() {
                         self.inferior.as_mut().unwrap()
                                      .kill().unwrap();
                     }
-                    if let Some(inferior) = Inferior::new(&self.target, &args, &self.breakpoints) {
+                    if let Some(inferior) = Inferior::new(&self.target, &args, &mut self.breakpoints) {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         // Wake up the inferior
@@ -135,9 +204,11 @@ impl Debugger {
 
                     if let Some(b_addr) = Debugger::parse_address(&addr[1..]) {
                         // If the inferior is some, add this new breakpoint
+                        let mut breakpoint = Breakpoint { addr: 0, orig_byte: 0};
+                        
                         if self.inferior.is_some() {
                             match self.inferior.as_mut().unwrap().write_byte(b_addr, 0xcc) {
-                                Ok(_) => {},
+                                Ok(orig_byte) => { breakpoint.orig_byte = orig_byte },
                                 Err(_) => {
                                     println!("Error setting breakpoint at {}", b_addr);
                                     return;
@@ -146,7 +217,9 @@ impl Debugger {
                         }
                         
                         println!("Set breakpoint {} at {:#x}", self.breakpoints.len(), b_addr);
-                        self.breakpoints.push(b_addr);
+                        
+                        breakpoint.addr = b_addr;
+                        self.breakpoints.insert(b_addr, breakpoint);
                         
                     } else {
                         println!("Invalid address");

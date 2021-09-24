@@ -5,6 +5,8 @@ use nix::unistd::Pid;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
 use std::mem::size_of;
+use std::collections::HashMap;
+use crate::debugger::Breakpoint;
 use crate::dwarf_data::{DwarfData};
 
 pub enum Status {
@@ -40,7 +42,7 @@ pub struct Inferior {
 impl Inferior {
     /// Attempts to start a new inferior process. Returns Some(Inferior) if successful, or None if
     /// an error is encountered.
-    pub fn new(target: &str, args: &Vec<String>, breakpoints: &Vec<usize>) -> Option<Inferior> {
+    pub fn new(target: &str, args: &Vec<String>, breakpoints: & mut HashMap<usize, Breakpoint>) -> Option<Inferior> {
         let mut cmd = Command::new(target);
         cmd.args(args);
         
@@ -54,13 +56,13 @@ impl Inferior {
         match waitpid(nix::unistd::Pid::from_raw(inferior.child.id() as i32), None).ok()? {
             WaitStatus::Stopped(_pid, _sig) => {
                 // The target is actually loaded, add breakpoints
-                for baddr in breakpoints {
+                for (baddr, breakpoint) in breakpoints {
                     match inferior.write_byte(*baddr, 0xcc) {
                         Err(_) => {
                             println!("Unable to set breakpoint at {}", baddr);
                             return None;
                         },
-                        Ok(_) => {}
+                        Ok(orig_byte) => { breakpoint.orig_byte = orig_byte; }
                     }
                 }
                 Some(inferior)
@@ -141,5 +143,16 @@ impl Inferior {
             updated_word as *mut std::ffi::c_void,
         )?;
         Ok(orig_byte as u8)
+    }
+
+    pub fn step_back_rip(&mut self) -> Result<(), nix::Error> {
+        let mut regs = ptrace::getregs(self.pid())?;
+        regs.rip = regs.rip - 1;
+        ptrace::setregs(self.pid(), regs)
+    }
+
+    pub fn step(&mut self) -> Result<Status, nix::Error> {
+        ptrace::step(self.pid(), None)?;
+        self.wait(None)
     }
 }

@@ -63,11 +63,12 @@ impl Debugger {
                 return;
         }
 
-        // At first, self.inferior_stopped_by_bp is false. When the inferior is stopped at a breakpoint,
+        // At first, self.inferior_stopped_by_bp flag is false. When the inferior is stopped at a breakpoint,
         // this flag shoule be set to true. Then after the next `continue` command, self.inferior_stopped_by_bp
         // is true, and the byte in the memory at breakpoint address should be set to the original value, and %rip -= 1.
-        // So the inferior re-execute the next instruction, as if the breakpoint doesn't exist.
-        // Finally restore this breakpoint.
+        // So the inferior can re-execute the next instruction, as if the breakpoint doesn't exist.\
+        // 
+        // Finally restore this breakpoint, which set the byte at breakpoint address to 0xcc, and clear flag.
         if self.inferior_stopped_by_bp {
             match self.inferior.as_mut().unwrap().step() {
                 Ok(status) => {
@@ -84,13 +85,8 @@ impl Debugger {
                         },
                         Status::Stopped(signal, rip) => {
                             if signal == nix::sys::signal::Signal::SIGTRAP {
-                                // Set the breakpoint
-                                if let Some(breakpoint) = self.breakpoints.get_mut(&(rip - 1)) {
-                                    breakpoint.orig_byte = self.inferior.as_mut().unwrap()
-                                        .write_byte(breakpoint.addr, 0xcc)
-                                        .expect(&format!("Reset breakpoint at {} failed", breakpoint.addr));
-                                    self.inferior_stopped_by_bp = false;
-                                }
+                                self.reset_bp(rip);
+                                self.inferior_stopped_by_bp = false;
                             }
                         }    
                     }
@@ -128,15 +124,8 @@ impl Debugger {
 
                         // Check breakpoint
                         if signal == nix::sys::signal::Signal::SIGTRAP {
-                            // Now rip == breakpoint_addr + 1;
-                            if let Some(breakpoint) = self.breakpoints.get(&(rip - 1)) {
-                                // Restore the breakpoint
-                                let inferior = self.inferior.as_mut().unwrap();
-                                inferior.write_byte(breakpoint.addr, breakpoint.orig_byte)
-                                        .expect(&format!("Restore breakpoint at {} failed", breakpoint.addr));
-                                inferior.step_back_rip().unwrap();
-                                self.inferior_stopped_by_bp = true;
-                            }
+                            self.restore_bp(rip);
+                            self.inferior_stopped_by_bp = true;
                         }
                     }
                 }
@@ -144,6 +133,26 @@ impl Debugger {
             Err(_) => {
                 println!("Error continuing subprocess");
             }
+        }
+    }
+
+    fn reset_bp(&mut self, rip: usize) {
+        // Set the breakpoint
+        if let Some(breakpoint) = self.breakpoints.get_mut(&(rip - 1)) {
+            breakpoint.orig_byte = self.inferior.as_mut().unwrap()
+                .write_byte(breakpoint.addr, 0xcc)
+                .expect(&format!("Reset breakpoint at {} failed", breakpoint.addr));
+        }
+    }
+
+    fn restore_bp(&mut self, rip: usize) {
+        // Now rip == breakpoint_addr + 1;
+        if let Some(breakpoint) = self.breakpoints.get(&(rip - 1)) {
+            // Restore the breakpoint
+            let inferior = self.inferior.as_mut().unwrap();
+            inferior.write_byte(breakpoint.addr, breakpoint.orig_byte)
+                    .expect(&format!("Restore breakpoint at {} failed", breakpoint.addr));
+            inferior.step_back_rip().unwrap();
         }
     }
 

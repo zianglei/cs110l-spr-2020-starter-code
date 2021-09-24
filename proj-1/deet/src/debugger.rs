@@ -53,16 +53,18 @@ impl Debugger {
         match self.inferior.as_mut().unwrap().cont() {
             Ok(status) => {
                 match status {
-                    Status::Exited(_code) => {
-                        println!("Child exited (status {})", _code);
+                    Status::Exited(code) => {
+                        println!("Child exited (status {})", code);
                         self.inferior = None;
                     },
-                    Status::Signaled(_signal) => {
-                        println!("Child signaled (signal {})", _signal);
+                    Status::Signaled(signal) => {
+                        println!("Child signaled (signal {})", signal);
                         self.inferior = None;
                     },
-                    Status::Stopped(_signal, _) => {
-                        println!("Child stopped (signal {})", _signal);                                    }
+                    Status::Stopped(signal, rip) => {
+                        println!("Child stopped (signal {})", signal);
+                        println!("Stopped at {}", self.debug_data.get_line_from_addr(rip).unwrap());
+                    }
                 }
             },
             Err(_) => {

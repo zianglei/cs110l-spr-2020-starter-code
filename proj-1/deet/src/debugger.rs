@@ -204,35 +204,8 @@ impl Debugger {
                         }
                     }
                 },
-                DebuggerCommand::Breakpoint(addr) => {
-
-                    if !addr.starts_with("*") {
-                        println!("Invalid address");
-                        return;
-                    }
-
-                    if let Some(b_addr) = Debugger::parse_address(&addr[1..]) {
-                        // If the inferior is some, add this new breakpoint
-                        let mut breakpoint = Breakpoint { addr: 0, orig_byte: 0};
-                        
-                        if self.inferior.is_some() {
-                            match self.inferior.as_mut().unwrap().write_byte(b_addr, 0xcc) {
-                                Ok(orig_byte) => { breakpoint.orig_byte = orig_byte },
-                                Err(_) => {
-                                    println!("Error setting breakpoint at {}", b_addr);
-                                    return;
-                                }
-                            }
-                        }
-                        
-                        println!("Set breakpoint {} at {:#x}", self.breakpoints.len(), b_addr);
-                        
-                        breakpoint.addr = b_addr;
-                        self.breakpoints.insert(b_addr, breakpoint);
-                        
-                    } else {
-                        println!("Invalid address");
-                    }
+                DebuggerCommand::Breakpoint(token) => {
+                    self.set_bp(token);
                 }
             }
         }
@@ -277,5 +250,44 @@ impl Debugger {
                 }
             }
         }
+    }
+
+    fn set_bp(&mut self, token: String) {
+
+        let bp_addr: Option<usize>;
+        if token.starts_with("*") {
+            // address
+            bp_addr = Debugger::parse_address(&token[1..]);
+        } else if let Some(line_number) = token.parse::<usize>().ok() {
+            // line number
+            bp_addr = self.debug_data.get_addr_for_line(None, line_number);
+        } else {
+            // function name
+            bp_addr = self.debug_data.get_addr_for_function(None, &token);
+        }
+
+        if bp_addr.is_none() {
+            println!("Invalid breakpoint!");
+            return;
+        }
+        
+        let addr = bp_addr.unwrap();
+        let mut breakpoint = Breakpoint { addr: addr, orig_byte: 0};
+                
+        if self.inferior.is_some() {
+            match self.inferior.as_mut().unwrap().write_byte(addr, 0xcc) {
+                Ok(orig_byte) => { breakpoint.orig_byte = orig_byte },
+                Err(_) => {
+                    println!("Error setting breakpoint at {}", addr);
+                    return;
+                }
+            }
+        }
+        
+        println!("Set breakpoint {} at {:#x}", self.breakpoints.len(), addr);
+        
+        breakpoint.addr = addr;
+        self.breakpoints.insert(addr, breakpoint);
+        return;
     }
 }

@@ -254,32 +254,31 @@ impl Debugger {
                                                 self.reset_bp(rip);
                                                 self.inferior_stopped_by_bp = false;
                                             }
-
-                                            if signal == nix::sys::signal::Signal::SIGTRAP {
-                                                // println!("rip: {:#x}", rip);
-                                                if self.restore_bp(rip).is_some() {
-                                                    // Stopped at a breakpoint
-                                                    // println!("stopped at a breakpoint");
-                                                    self.print_code(rip);
-                                                    self.inferior_stopped_by_bp = true;
-                                                    break;
-                                                } else {
-                                                    // Just a step, get the line number
-                                                    if let Some(line_number) = self.debug_data.get_line_from_addr(rip) {
-                                                        //println!("line_number: {}, old: {}", line_number.number, old_line_number.number);
-                                                        if line_number.number != old_line_number.number {
-                                                            // Reach the next line, stop.
-                                                            self.print_code(rip);
-                                                            break;
-                                                        }
-                                                    }
-                                                    // Continue to execute the next instruction.
-                                                }
-                                            } else {
-                                                // Other signals, stop execution;
+                                            
+                                            if signal != nix::sys::signal::Signal::SIGTRAP {
                                                 println!("Child stopped (signal {})", signal);
                                                 self.print_code(rip);
                                                 break;
+                                            }
+
+                                            // println!("rip: {:#x}", rip);
+                                            if self.restore_bp(rip).is_some() {
+                                                // Stopped at a breakpoint
+                                                // println!("stopped at a breakpoint");
+                                                self.print_code(rip);
+                                                self.inferior_stopped_by_bp = true;
+                                                break;
+                                            } else {
+                                                // Just a step, get the line number
+                                                if let Some(line_number) = self.debug_data.get_line_from_addr(rip) {
+                                                    //println!("line_number: {}, old: {}", line_number.number, old_line_number.number);
+                                                    if line_number.number != old_line_number.number {
+                                                        // Reach the next line, stop.
+                                                        self.print_code(rip);
+                                                        break;
+                                                    }
+                                                }
+                                                // Continue to execute the next instruction.
                                             }
                                         }   
                                     }

@@ -5,6 +5,8 @@ use crate::dwarf_data::{DwarfData, Error as DwarfError};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufReader, BufRead};
 
 #[derive(Clone, Debug)]
 pub struct Breakpoint {
@@ -118,6 +120,7 @@ impl Debugger {
 
                         if let Some(line) = self.debug_data.get_line_from_addr(rip) {
                             println!("Stopped at {}", line);
+                            self.print_code(rip);
                         }
 
                         // Check breakpoint
@@ -163,6 +166,15 @@ impl Debugger {
             &addr
         };
         usize::from_str_radix(addr_without_0x, 16).ok()
+    }
+
+    fn print_code(&self, rip: usize) {
+        if let Some(line) = self.debug_data.get_line_from_addr(rip) {
+            let source_file = if let Ok(file) = File::open(line.file) { file } else { return } ;
+            if let Some(code) = BufReader::new(source_file).lines().nth(line.number - 1) {
+                println!("{}\t{}", line.number, code.unwrap());
+            }
+        }
     }
 
     pub fn run(&mut self) {
@@ -237,24 +249,27 @@ impl Debugger {
                                             break;
                                         },
                                         Status::Stopped(signal, rip) => {
-                                            // println!("{}", self.inferior_stopped_by_bp);
+                                            
                                             if self.inferior_stopped_by_bp {
                                                 self.reset_bp(rip);
                                                 self.inferior_stopped_by_bp = false;
                                             }
+
                                             if signal == nix::sys::signal::Signal::SIGTRAP {
                                                 // println!("rip: {:#x}", rip);
                                                 if self.restore_bp(rip).is_some() {
                                                     // Stopped at a breakpoint
-                                                    println!("stopped at a breakpoint");
+                                                    // println!("stopped at a breakpoint");
+                                                    self.print_code(rip);
                                                     self.inferior_stopped_by_bp = true;
                                                     break;
                                                 } else {
                                                     // Just a step, get the line number
                                                     if let Some(line_number) = self.debug_data.get_line_from_addr(rip) {
-                                                        // println!("line_number: {}, old: {}", line_number.number, old_line_number.number);
-                                                        if line_number.number == old_line_number.number + 1 {
+                                                        //println!("line_number: {}, old: {}", line_number.number, old_line_number.number);
+                                                        if line_number.number != old_line_number.number {
                                                             // Reach the next line, stop.
+                                                            self.print_code(rip);
                                                             break;
                                                         }
                                                     }
@@ -263,6 +278,7 @@ impl Debugger {
                                             } else {
                                                 // Other signals, stop execution;
                                                 println!("Child stopped (signal {})", signal);
+                                                self.print_code(rip);
                                                 break;
                                             }
                                         }   

@@ -145,13 +145,17 @@ impl Inferior {
         Ok(orig_byte as u8)
     }
 
+    pub fn get_rip(&self) -> Result<usize, nix::Error> {
+        Ok(ptrace::getregs(self.pid())?.rip as usize)
+    }
+
     pub fn step_back_rip(&mut self) -> Result<(), nix::Error> {
         let mut regs = ptrace::getregs(self.pid())?;
         regs.rip = regs.rip - 1;
         ptrace::setregs(self.pid(), regs)
     }
 
-    pub fn step(&mut self) -> Result<Status, nix::Error> {
+    pub fn step(&self) -> Result<Status, nix::Error> {
         ptrace::step(self.pid(), None)?;
         self.wait(None)
     }

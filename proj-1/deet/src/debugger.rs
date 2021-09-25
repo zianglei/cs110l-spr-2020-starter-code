@@ -37,8 +37,6 @@ impl Debugger {
                 std::process::exit(1);
             }
         };
-
-        debug_data.print();
         
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
@@ -145,7 +143,7 @@ impl Debugger {
         }
     }
 
-    fn restore_bp(&mut self, rip: usize) {
+    fn restore_bp(&mut self, rip: usize) -> Option<()> {
         // Now rip == breakpoint_addr + 1;
         if let Some(breakpoint) = self.breakpoints.get(&(rip - 1)) {
             // Restore the breakpoint
@@ -153,7 +151,9 @@ impl Debugger {
             inferior.write_byte(breakpoint.addr, breakpoint.orig_byte)
                     .expect(&format!("Restore breakpoint at {} failed", breakpoint.addr));
             inferior.step_back_rip().unwrap();
+            return Some(())
         }
+        None
     }
 
     fn parse_address(addr: &str) -> Option<usize> {
@@ -206,6 +206,73 @@ impl Debugger {
                 },
                 DebuggerCommand::Breakpoint(token) => {
                     self.set_bp(token);
+                },
+                DebuggerCommand::Next => {
+                    
+                    if let Some(inferior) = &self.inferior {
+                        let line_number = self.debug_data.get_line_from_addr(
+                            inferior.get_rip().unwrap()
+                        );
+                        if line_number.is_none() {
+                            println!("Error get current line number");
+                            break;
+                        }
+                        let old_line_number = line_number.unwrap();
+                        
+                        loop {
+                            match self.inferior.as_mut().unwrap().step() {
+                                Err(e) => {
+                                    println!("Error next command: {:?}", e);
+                                },
+                                Ok(status) => {
+                                    match status {
+                                        Status::Exited(code) => {
+                                            println!("Child exited (status {})", code);
+                                            self.inferior = None;
+                                            break;
+                                        },
+                                        Status::Signaled(signal) => {
+                                            println!("Child signaled (signal {})", signal);
+                                            self.inferior = None;
+                                            break;
+                                        },
+                                        Status::Stopped(signal, rip) => {
+                                            // println!("{}", self.inferior_stopped_by_bp);
+                                            if self.inferior_stopped_by_bp {
+                                                self.reset_bp(rip);
+                                                self.inferior_stopped_by_bp = false;
+                                            }
+                                            if signal == nix::sys::signal::Signal::SIGTRAP {
+                                                // println!("rip: {:#x}", rip);
+                                                if self.restore_bp(rip).is_some() {
+                                                    // Stopped at a breakpoint
+                                                    println!("stopped at a breakpoint");
+                                                    self.inferior_stopped_by_bp = true;
+                                                    break;
+                                                } else {
+                                                    // Just a step, get the line number
+                                                    if let Some(line_number) = self.debug_data.get_line_from_addr(rip) {
+                                                        // println!("line_number: {}, old: {}", line_number.number, old_line_number.number);
+                                                        if line_number.number == old_line_number.number + 1 {
+                                                            // Reach the next line, stop.
+                                                            break;
+                                                        }
+                                                    }
+                                                    // Continue to execute the next instruction.
+                                                }
+                                            } else {
+                                                // Other signals, stop execution;
+                                                println!("Child stopped (signal {})", signal);
+                                                break;
+                                            }
+                                        }   
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        println!("No running subprocess!");
+                    }
                 }
             }
         }

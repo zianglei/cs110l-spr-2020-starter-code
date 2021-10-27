@@ -4,7 +4,7 @@ mod response;
 use clap::Parser;
 
 use rand::{Rng, SeedableRng};
-use tokio::{net::TcpListener, net::TcpStream, stream::StreamExt};
+use tokio::{net::TcpListener, net::TcpStream, stream::StreamExt, sync::RwLock};
 use std::sync::Arc;
 
 /// Contains information parsed from the command-line invocation of balancebeam. The Clap macros
@@ -57,6 +57,9 @@ struct ProxyState {
     max_requests_per_minute: usize,
     /// Addresses of servers that we are proxying to
     upstream_addresses: Vec<String>,
+    /// Boolean flag to indicate whether corresponding upstream_address is valid
+    upstream_address_flags: Vec<bool>,
+    upstream_address_valid_num: usize
 }
 
 #[tokio::main]
@@ -85,35 +88,58 @@ async fn main() {
         }
     };
     log::info!("Listening for requests on {}", options.bind);
+    
+    let upstream_len = options.upstream.len();
+    let flags = vec![true; options.upstream.len()];
 
     // Handle incoming connections
-    let state = Arc::new(ProxyState {
+    let state = Arc::new(RwLock::new(ProxyState {
         upstream_addresses: options.upstream,
+        upstream_address_flags: flags,
+        upstream_address_valid_num: upstream_len,
         active_health_check_interval: options.active_health_check_interval,
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
-    });
+    }));
     let mut incoming = listener.incoming();
     while let Some(stream) = incoming.next().await {
         if let Ok(stream) = stream {
             // Handle the connection!
             let state_ref = state.clone();
             tokio::spawn(async move {
-                handle_connection(stream, &*state_ref).await;
+                handle_connection(stream, state_ref).await;
             });
         }
     }
 }
 
-async fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::Error> {
+async fn connect_to_upstream(state: Arc<RwLock<ProxyState>>) -> Result<TcpStream, std::io::Error> {
     let mut rng = rand::rngs::StdRng::from_entropy();
-    let upstream_idx = rng.gen_range(0, state.upstream_addresses.len());
-    let upstream_ip = &state.upstream_addresses[upstream_idx];
-    TcpStream::connect(upstream_ip).await.or_else(|err| {
-        log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
-        Err(err)
-    })
-    // TODO: implement failover (milestone 3)
+    loop {
+        
+        let s = state.read().await;
+        let upstream_idx = rng.gen_range(0, s.upstream_addresses.len());
+        let upstream_ip = &s.upstream_addresses[upstream_idx];
+        
+        if s.upstream_address_valid_num == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "No valid upstream addresses"));
+        }
+        if !s.upstream_address_flags[upstream_idx] {
+            continue;
+        }
+            
+        match TcpStream::connect(upstream_ip).await.or_else(|err| {
+            log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
+            Err(err)
+        }) {
+            Ok(stream) => { return Ok(stream); }
+            Err(_) => {
+                drop(s);
+                state.write().await.upstream_address_flags[upstream_idx] = false;
+                state.write().await.upstream_address_valid_num -=1;
+            }
+        }
+    }
 }
 
 async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Vec<u8>>) {
@@ -125,7 +151,7 @@ async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Ve
     }
 }
 
-async fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
+async fn handle_connection(mut client_conn: TcpStream, state: Arc<RwLock<ProxyState>>) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
     log::info!("Connection received from {}", client_ip);
 

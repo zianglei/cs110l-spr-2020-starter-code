@@ -5,9 +5,11 @@ use clap::Parser;
 
 use rand::{Rng, SeedableRng};
 use tokio::{net::TcpListener, net::TcpStream, stream::StreamExt, sync::RwLock};
+use tokio::time::{ Instant, Duration };
 use tokio::time;
-use std::sync::Arc;
 use std::thread;
+use std::sync::Arc;
+use std::collections::HashMap;
 
 /// Contains information parsed from the command-line invocation of balancebeam. The Clap macros
 /// provide a fancy way to automatically construct a command-line argument parser.
@@ -61,7 +63,9 @@ struct ProxyState {
     upstream_addresses: Vec<String>,
     /// Boolean flag to indicate whether corresponding upstream_address is valid
     upstream_address_flags: Vec<bool>,
-    upstream_address_valid_num: usize
+    upstream_address_valid_num: usize,
+    upstream_address_request_counters: HashMap<String, usize>,
+    last_rate_limiting_check_time: Instant,
 }
 
 #[tokio::main]
@@ -99,9 +103,11 @@ async fn main() {
         upstream_addresses: options.upstream,
         upstream_address_flags: flags,
         upstream_address_valid_num: upstream_len,
+        upstream_address_request_counters: HashMap::new(),
         active_health_check_interval: options.active_health_check_interval,
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
+        last_rate_limiting_check_time: Instant::now(),
     }));
 
     let state_monitor_ref = state.clone();
@@ -164,6 +170,12 @@ async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Ve
 async fn handle_connection(mut client_conn: TcpStream, state: Arc<RwLock<ProxyState>>) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
     log::info!("Connection received from {}", client_ip);
+
+    if let Err(_) = rate_limiting_fixed_window(&state, &client_ip).await {
+        let response = response::make_http_error(http::StatusCode::TOO_MANY_REQUESTS);
+        send_response(&mut client_conn, &response).await;
+        return;
+    }
 
     // Open a connection to a random destination server
     let mut upstream_conn = match connect_to_upstream(&state).await {
@@ -333,6 +345,35 @@ async fn active_health_check(state: Arc<RwLock<ProxyState>>) {
                     }
                 }
             };
+        }
+    }
+}
+
+async fn rate_limiting_fixed_window(state: &Arc<RwLock<ProxyState>>, client_ip: &String) -> Result<(), std::io::Error> {
+    
+    let max_requests = state.read().await.max_requests_per_minute;
+    {
+        let s = state.read().await;
+        if s.last_rate_limiting_check_time.elapsed() >= Duration::from_secs(60) {
+            // clear all requests counter
+            drop(s);
+            {
+                let mut s = state.write().await;
+                for (_, value) in s.upstream_address_request_counters.iter_mut() {
+                    *value = 0;
+                }
+                s.last_rate_limiting_check_time = Instant::now();
+            }
+        }
+    }
+    {
+        let mut s = state.write().await;
+        let times = s.upstream_address_request_counters.entry(client_ip.to_string()).or_insert(0);
+        *times += 1;
+        if *times > max_requests {
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "Too many requests"))
+        } else {
+            Ok(())
         }
     }
 }
